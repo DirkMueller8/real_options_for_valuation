@@ -1,0 +1,417 @@
+Const p_cstrAppname = "Real Option Model"
+Const p_cstrAppVersion = "1.0"
+Const p_cstrAppDate = "Dec 12, 2016"
+Const p_cstrAppAuthor = "Dirk Mueller"
+
+Const m_LimitPVUnderlying = 10000000
+Const m_LimitLowVolatility = 0.01
+Const m_LimitHighVolatility = 100
+Const m_LimitLowAmountofPeriods = 2
+Const m_LimitHighAmountofPeriods = 11
+Const m_LimitLowRiskFreeInterestRate = 0.1
+Const m_LimitHighRiskFreeInterestRate = 20
+Const m_LimitLowProbability = 1
+Const m_LimitHighProbability = 100
+Const sngLimitStrike = 100000000
+Option Explicit
+'
+' ***************************************************************************************
+' Software accompanying the thesis for the Certified Financial Engineer (Part III)
+' Author: Dirk Mueller
+' Date: 12 December 2016
+'
+' Short description: This software queries the free cash flows and strike values from the
+' user to obtain the project value within the Real Option Model, based on Geske and
+' a binomial tree approach.
+' ***************************************************************************************
+'
+
+Private Sub MultiPage1_Change()
+
+End Sub
+
+' This routine is invoked whenever the program is started:
+Private Sub UserForm_Initialize()
+  ' Just before displaying the user form, load the info text:
+  Dim strTemp As String
+  
+  ' Go to first multipage, which allows input of variables:
+  MultiPage1.Value = 0
+  Me.lblInfoText.Caption = "Real Option Model (ROM) "
+  Me.lblInfo.Caption = "ROM calculates the project values by starting from the " _
+  & "Present Value and successively builds a binomial tree. The tree values represent" _
+  & " the possible states of the project values. Each new Up and Down value is calculated" _
+  & " by multiplying the existing project by exp(Up) and exp(Down), respectively. " _
+  & "The length of each time period is assumed to be 1 year. " & vbCrLf _
+  & "In a 2nd step, a roll-back analysis giving the Call and finally the option values " _
+  & "is performed, where the probability of a Up and Down movement is used to " _
+  & "gradually move back to the left center, to finally extract the single project value. " _
+  & "Finally, this value is multiplied by the technological probability to derive the " _
+  & "Total ROM value." & vbCrLf & "All calculated values are displayed in the " _
+  & "form and in worksheets."
+  
+  strTemp = Format(m_LimitPVUnderlying, "#,##")
+  Me.lblLimits.Caption = "Boundary conditions for input: " & vbCrLf & _
+  "The Present Value of the Underlying must be smaller than " _
+  & strTemp & " Euro." & vbCrLf & "The Volatility must lie between " & _
+  m_LimitLowVolatility & " and " & m_LimitHighVolatility & "." & vbCrLf & _
+  "The Amount of Periods must lie between " & m_LimitLowAmountofPeriods & " and " _
+  & m_LimitHighAmountofPeriods & ". " & vbCrLf & _
+  "The risk-free interest rate must lie between " & m_LimitLowRiskFreeInterestRate _
+  & " and " & m_LimitHighRiskFreeInterestRate & ". " & vbCrLf & _
+  "The Probability must lie between " & m_LimitLowProbability & " and " _
+  & m_LimitHighProbability & ". "
+  
+  Me.lblInfoAuthor.Caption = "Name: " & vbTab & p_cstrAppname & vbCrLf & _
+    "Version: " & vbTab & p_cstrAppVersion & vbCrLf & _
+    "Date: " & vbTab & p_cstrAppDate & vbCrLf & _
+    "Author: " & vbTab & p_cstrAppAuthor & vbCrLf
+  Load Me
+End Sub ' UserForm_Initialize
+
+Private Sub btn_Cancel_Click()
+' When Cancel button was pressed, abort and unload user form:
+  Dim strMessagetoAbort As String
+  Dim intAnswer As Integer
+  strMessagetoAbort = "Exit this input mask?"
+  intAnswer = MsgBox(strMessagetoAbort, vbQuestion + vbYesNo, "Real Optionen / Eingabe")
+  If intAnswer = vbYes Then Unload Me
+End Sub ' btn_Cancel_Click
+
+Private Sub btnCancelOV_Click()
+' When Cancel button was pressed, abort and unload user form:
+  Dim strMessagetoAbort As String
+  Dim intAnswer As Integer
+  strMessagetoAbort = "Exit application?"
+  intAnswer = MsgBox(strMessagetoAbort, vbQuestion + vbYesNo, "Real Optionen / Eingabe")
+  If intAnswer = vbYes Then Unload Me
+End Sub ' btn_Cancel_Click
+
+Private Sub btnCancelCV_Click()
+' When Cancel button was pressed, abort and unload user form:
+  Dim strMessagetoAbort As String
+  Dim intAnswer As Integer
+  strMessagetoAbort = "Exit application?"
+  intAnswer = MsgBox(strMessagetoAbort, vbQuestion + vbYesNo, "Real Optionen / Eingabe")
+  If intAnswer = vbYes Then Unload Me
+End Sub ' btn_Cancel_Click
+
+' When the user pressed the button "Calculate Binomial Tree" this subroutine starts:
+Private Sub btnContinue_Click()
+  ' Keep track of the last row number of the Used Range:
+  Dim lngRowMax As Long
+  ' Next free line:
+  Dim intSeriesforDataInput As Integer
+  ' Working indices:
+  Dim i As Integer, j As Integer
+  Dim wksName As Worksheet
+  ' Present value of Underlying:
+  Dim sngPVUnderlying As Single
+  Dim sngVolatility As Single
+  Dim intAmountofPeriods As Integer
+  Dim sngRiskFreeInterestRate As Single
+  Dim sngProbability As Single
+  Dim sngTemp1 As Single
+  Dim strText As String
+  Dim strText1 As String
+  ' Strike price in Euro for each period:
+  Dim sngStrike() As Single
+  ' Matrix für Ausübungspreise dimensionalisieren, basiert auf die Anzahl der Perioden.
+  Dim bolGoodInput As Boolean
+  Dim sngUp As Single
+  Dim sngDown As Single
+  Dim sngTree() As Single
+  Dim sngOptionValues() As Single
+  Dim TotalROMValue As Single
+  Dim intRows As Integer
+  Dim rngProject As Range
+  Dim rngZeile As Range
+  Dim rngTree As Range
+  Dim varArray As Variant
+
+  ' Create a worksheet to record the input, if not existing:
+  If Not WorksheetExists("Input") Then
+    ' Create a worksheet and define the name:
+    Set wksName = ThisWorkbook.Sheets.Add(After:= _
+                 ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    wksName.Name = "Input"
+  End If ' Not WorksheetExists("Input")
+  
+  With ThisWorkbook.Sheets("Input")
+    ' Calculate the amount of rows, that already contain data:
+    lngRowMax = .UsedRange.Rows.Count
+    ' Calculate the row number, into which the next input series is placed into:
+    intSeriesforDataInput = lngRowMax + 1
+    
+    ' In the following block the input is checked for sanity:
+    If Me.txtPVUnderlying = "" Then
+      MsgBox ("The present value you gave is empty!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Not IsNumeric(Me.txtPVUnderlying) Then
+      MsgBox ("The present value you gave is not numeric!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtPVUnderlying <= 0 Then
+      MsgBox ("The present value you gave is negative or zero!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtPVUnderlying > m_LimitPVUnderlying Then
+      MsgBox ("The present value you gave is larger than " & m_LimitPVUnderlying _
+      & " Euro.")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    Else
+    ' The value is transformed to Single & placed into respective column of Input:
+      sngPVUnderlying = CSng(Me.txtPVUnderlying)
+      .Range("A" & intSeriesforDataInput).Value = sngPVUnderlying
+    ' Format the value in cell:
+      .Range("A" & intSeriesforDataInput).NumberFormat = "#,##0.00"
+      .Range("A1").Value = "Present Value(€)"
+      .Columns(1).ColumnWidth = 15.5
+    End If ' Me.txtPVUnderlying = ""
+    
+    ' In the following block the input is checked for sanity:
+    If Me.txtVolatility = "" Then
+      MsgBox ("The volatility you gave is empty!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Not IsNumeric(Me.txtVolatility) Then
+      MsgBox ("The volatility you gave is not numeric!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtVolatility < m_LimitLowVolatility Then
+      MsgBox ("The volatility you gave is smaller than " & m_LimitLowVolatility & "!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtVolatility > m_LimitHighVolatility Then
+      MsgBox ("The volatility you gave is larger than " & m_LimitHighVolatility & ".")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    Else
+    ' The value is transformed to Single & placed into respective column of Input:
+      sngVolatility = CSng(Me.txtVolatility) / 100
+      .Range("B" & intSeriesforDataInput).Value = sngVolatility
+    ' Format the value:
+      .Range("B" & intSeriesforDataInput).NumberFormat = "0.00"
+      .Range("B1").Value = "Volatility"
+      .Columns(2).ColumnWidth = 10
+    End If
+    
+    If Me.txtAmountofPeriods = "" Then
+      MsgBox ("The Amount of Periods you gave is empty!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Not IsNumeric(Me.txtAmountofPeriods) Then
+      MsgBox ("The Amount of Periods you gave is not numeric!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtAmountofPeriods < m_LimitLowAmountofPeriods Then
+      MsgBox ("The Amount of Periods is smaller than " & m_LimitLowAmountofPeriods)
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtAmountofPeriods > m_LimitHighAmountofPeriods Then
+      MsgBox ("The Amount of Periods is larger than " & m_LimitHighAmountofPeriods & ".")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    Else
+    ' The value is transformed to Single & placed into respective column of Input:
+      intAmountofPeriods = CInt(Me.txtAmountofPeriods)
+      .Range("C" & intSeriesforDataInput).Value = intAmountofPeriods
+    ' Format value:
+      .Range("C" & intSeriesforDataInput).NumberFormat = "0"
+      .Range("C1").Value = "Amount of Periods"
+      .Columns(3).ColumnWidth = 17
+    End If
+    
+    ' Redimensionlize strike value matrix:
+    ReDim sngStrike(1 To intAmountofPeriods)
+    ReDim sngTree(1 To intAmountofPeriods, 1 To 2 * intAmountofPeriods - 1)
+                                     
+    ' In the following block the input is checked for sanity:
+    If Me.txtRiskFreeInterest = "" Then
+      MsgBox ("The Risk-Free Rate of Interest you gave is empty!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Not IsNumeric(Me.txtRiskFreeInterest) Then
+      MsgBox ("The Risk-Free Rate of Interest you gave is not numeric!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtRiskFreeInterest < m_LimitLowRiskFreeInterestRate Then
+      MsgBox ("The Risk-Free Rate of Interest you gave is lower than " & _
+      m_LimitLowRiskFreeInterestRate & "!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtRiskFreeInterest > m_LimitHighRiskFreeInterestRate Then
+      MsgBox ("The Risk-Free Rate of Interest you gave is larger than " & _
+      m_LimitHighRiskFreeInterestRate & ".")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    Else
+    ' The value is transformed to Single & placed into respective column of Input:
+      sngRiskFreeInterestRate = CSng(Me.txtRiskFreeInterest) / 100
+      .Range("D" & intSeriesforDataInput).Value = sngRiskFreeInterestRate
+    ' Format value:
+      .Range("D" & intSeriesforDataInput).NumberFormat = "0.00"
+      .Range("D1").Value = "Risk-free interest rate"
+      .Columns(4).ColumnWidth = 20
+    End If
+    
+    ' In the following block the input is checked for sanity:
+    If Me.txtProbability = "" Then
+      MsgBox ("The Probability you gave is empty!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Not IsNumeric(Me.txtProbability) Then
+      MsgBox ("The Probability you gave is not numeric!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtProbability < m_LimitLowProbability Then
+      MsgBox ("The Probability you gave is lower than " & _
+      m_LimitLowProbability & "!")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    ElseIf Me.txtProbability > m_LimitHighProbability Then
+      MsgBox ("The Probability you gave is larger than " & _
+      m_LimitHighProbability & ".")
+      Rows(intSeriesforDataInput).EntireRow.Delete
+      Exit Sub
+    Else
+      ' The value is transformed to Single & placed into respective column of Input:
+      sngProbability = CSng(Me.txtProbability) / 100
+      .Range("E" & intSeriesforDataInput).Value = sngProbability
+      ' Format value:
+      .Range("E" & intSeriesforDataInput).NumberFormat = "0.00"
+      .Range("E1").Value = "Probability"
+      .Columns(5).ColumnWidth = 10
+    End If
+    .Rows(1).HorizontalAlignment = xlCenter
+  End With ' ThisWorkbook.Sheets(Input)
+  
+  ' Calculate possible states of the project values:
+  sngTree = TreeCalculation(sngPVUnderlying, sngVolatility, _
+            intAmountofPeriods, sngRiskFreeInterestRate, sngProbability)
+            
+  ' Move to 2nd tab in the multipage form:
+  MultiPage1.Value = 1
+  
+  ' Establish the time axis:
+  strText = vbTab & "0" & vbTab & "    1"
+  For i = 2 To intAmountofPeriods
+     strText = strText & "                " & i
+  Next i
+  Me.lblHeaderTest.Caption = strText
+  
+  '  Construct multiple columns with width=43 pt, for the listboxes displaying data:
+  strText1 = "43 pt;43 pt"
+  For i = 1 To intAmountofPeriods + 1
+    strText1 = strText1 & ";43 pt"
+  Next i
+ 
+  ' Focus on worksheet:
+  ThisWorkbook.Sheets("Project_values").Activate
+  ThisWorkbook.Sheets("Project_values").Range("A1").Select
+  
+  ' The range variable rngTree is defined from the worksheet to include the whole tree:
+  Set rngTree = ThisWorkbook.Sheets("Project_values").Range(Cells(1, 1), _
+                Cells(2 * intAmountofPeriods + 1, intAmountofPeriods + 1))
+                
+  ' This block takes the values from the worksheet and displays it in the listbox:
+  With Me.lstProjectValues
+    .ColumnWidths = strText1
+    .ColumnCount = intAmountofPeriods + 2
+    ' The range rngTree is resized to fit into the listbox:
+    varArray = rngTree.Resize(, Me.lstProjectValues.ColumnCount).Value
+    ' The values of the array are placed into the listbox:
+    .List = varArray
+  End With
+    
+  bolGoodInput = False
+  ' Input loop for strike values:
+  For i = 1 To intAmountofPeriods
+    Do Until bolGoodInput
+      strText = ""
+      Do Until strText <> ""
+        strText = InputBox("Strike for the period " & i & " (type -1 to abort)")
+        If strText = "-1" Then
+          ' Return to input tab of user form:
+          MultiPage1.Value = 0
+          Exit Sub
+        End If
+      Loop
+      If CSng(strText) >= 0 And CSng(strText) < sngLimitStrike Then
+        bolGoodInput = True
+        ' Convert and write strike values to matrix:
+        sngStrike(i) = CSng(strText)
+      Else
+        MsgBox ("The strike value you gave was outside of range. Try again.")
+      End If
+    Loop
+    bolGoodInput = False
+  Next i
+
+'  ReDim matrix containing possible values of calls (=option):
+  ReDim sngOptionValues(1 To intAmountofPeriods, 1 To 2 * intAmountofPeriods - 1)
+
+  ' Calculate Up factor:
+  sngUp = Exp(sngVolatility)
+  ' CalculateDown factor:
+  sngDown = Exp(-sngVolatility)
+
+  ' Calculate the matrix containing the possible Call values (=option) values:
+  sngOptionValues = OptionValues(intAmountofPeriods, sngTree, sngStrike, _
+                      sngUp, sngDown, sngRiskFreeInterestRate)
+  
+  ' Establish the time axis:
+  strText = vbTab & "0" & vbTab & "    1"
+  For i = 2 To intAmountofPeriods
+     strText = strText & "                " & i
+  Next i
+  Me.lblHeaderTest1.Caption = strText
+  
+  '  Construct multiple columns with width=50 pt, for the listboxes displaying data:
+  strText1 = "43 pt;43 pt"
+  For i = 1 To intAmountofPeriods + 1
+    strText1 = strText1 & ";43 pt"
+  Next i
+ 
+  ' Focus on worksheet:
+  ThisWorkbook.Sheets("Option_values").Activate
+  ThisWorkbook.Sheets("Option_values").Range("A1").Select
+  
+  Set rngTree = ThisWorkbook.Sheets("Option_values").Range(Cells(1, 1), _
+                Cells(2 * intAmountofPeriods + 1, intAmountofPeriods + 1))
+                
+  ' This block takes the values from the worksheet and displays it in the listbox:
+  With Me.lstOptionValues
+    .ColumnWidths = strText1
+    .ColumnCount = intAmountofPeriods + 2
+    ' The range rngTree is resized to fit into the listbox:
+    varArray = rngTree.Resize(, Me.lstOptionValues.ColumnCount).Value
+    ' The values of the array are placed into the listbox:
+    .List = varArray
+  End With
+
+  ' Go to last tab of multipage userform:
+  MultiPage1.Value = 2
+
+  ' Calculate the risk-adjusted total real option value by multiplying with probability:
+  TotalROMValue = sngOptionValues(intAmountofPeriods, 0) * sngProbability
+
+  ' Display the risk-adjusted total real option value:
+  With ThisWorkbook.Sheets("Option_values")
+    .Cells(intAmountofPeriods * 2 + 5, 1).Value = "Total ROM"
+    .Cells(intAmountofPeriods * 2 + 5, 2).Value = Format(TotalROMValue, "#,##0.00")
+    .Range(Cells(intAmountofPeriods * 2 + 5, 1), _
+    Cells(intAmountofPeriods * 2 + 5, 2)).Font.Bold = True
+    Range(Cells(intAmountofPeriods * 2 + 5, 2), Cells(intAmountofPeriods * 2 + 5, 2)). _
+    HorizontalAlignment = xlRight
+  End With
+
+  Me.lblHeaderTest2.Caption = "Total ROM value (risk-adjusted by " _
+                              & sngProbability * 100 & ")"
+  Me.txtTotalROM.Value = Format(TotalROMValue, "#,##0")
+            
+End Sub ' btnContinue_Click
+
+

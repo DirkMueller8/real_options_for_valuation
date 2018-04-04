@@ -1,0 +1,220 @@
+Option Explicit
+
+Function TreeCalculation(sngPVUnderlying As Single, sngVolatility As Single, _
+                  intAmountofPeriods As Integer, sngRiskFreeInterestRate As Single, _
+                  sngProbability As Single)
+'****************************************************************************************
+' This function calculates the possible states of project values in a binomial model
+' within the Real Option Method and returns the matrix containing the binomial-tree
+' elements.
+'
+' Dirk Mueller, Dec 12, 2016
+'****************************************************************************************
+  ' Matrix to calculate the project (call) value tree:
+  Dim sngTree() As Single
+  ' Redimensionalize matrix for the project values based on amount of periods (years):
+  ReDim sngTree(0 To 2 * intAmountofPeriods, 0 To intAmountofPeriods)
+  ' Keep track of the last row number of the Used Range:
+  Dim lngRowMax As Integer
+  Dim strMessageText As String
+  ' To check the validity of input:
+  Dim bolGoodInput As Boolean
+  ' Worksheet name:
+  Dim wksName As Worksheet
+  ' Working indices:
+  Dim i As Integer, j As Integer, k As Integer
+  ' sngUp is the Up factor, sngDown is the Down factor, calculated from the
+  ' Volatility and from Amount of Periods:
+  Dim sngUp As Single, sngDown As Single
+
+  ' Assign the PV of the Underlying to the left-most element in the project-value tree:
+  sngTree(intAmountofPeriods, 0) = sngPVUnderlying
+  ' Calculate Up factor:
+  sngUp = Exp(sngVolatility)
+  ' Calculate Down factor:
+  sngDown = Exp(-sngVolatility)
+  
+  ' Create a worksheet for the possible states of the project values, if not existing.
+  ' Otherwise delete old content:
+  If Not WorksheetExists("Project_values") Then
+    ' Create a worksheet and define the name:
+    Set wksName = ThisWorkbook.Sheets.Add(After:= _
+                 ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    wksName.Name = "Project_values"
+  Else
+    strMessageText = "The data from the previous case will be erased from the worksheet."
+    strMessageText = MsgBox(strMessageText, vbOK + vbCancel, "Preparing the new input")
+    ' If the user pressed Cancel, abort, and return to first multipage:
+    If strMessageText = 2 Then Exit Function
+    ' Otherwise delete content:
+    ThisWorkbook.Sheets("Project_values").Rows("1:200").Delete
+  End If ' Not WorksheetExists("Project_values")
+  
+  ' Bring focus to this worksheet:
+  ThisWorkbook.Sheets("Project_values").Activate
+'  ThisWorkbook.Sheets("Project_values").Range("A1").Select
+  ' Set the seed value, which is the present value of the underlying:
+  Cells(intAmountofPeriods + 1, 1) = sngTree(intAmountofPeriods, 0)
+  ' The variable i represents the row of the matrix:
+  i = intAmountofPeriods - 1
+  
+  ' The variable j represents the column of the matrix:
+  For j = 1 To intAmountofPeriods
+    ' Calculate the Up project value for the next higher period and write into cell:
+    sngTree(i, j) = sngTree(i + 1, j - 1) * sngUp
+    ' Write this value into the worksheet:
+    Cells(i + 1, j + 1) = CLng(sngTree(i, j))
+    ' Calculate the Down project value for the next higher period and write into cell:
+      For k = 1 To i
+        sngTree(i + k, j + k) = sngTree(i + k - 1, j + k - 1) * sngDown
+        Cells(i + k + 1, j + k + 1) = CLng(sngTree(i + k, j + k))
+      Next k
+    i = i - 1
+  Next j
+
+  i = intAmountofPeriods + 1
+  ' Calculate the lowest diagonal, from the seed to the lower right end and write into cell:
+  For k = 0 To i - 2
+    sngTree(i + k, k + 1) = sngTree(i + k - 1, k) * sngDown
+    Cells(i + k + 1, k + 2) = CLng(sngTree(i + k, k + 1))
+  Next k
+  
+  ' Format cells:
+  ThisWorkbook.Sheets("Project_values").UsedRange.Select
+  Selection.NumberFormat = "#,##0"
+  
+  ' Write time axis (years) into worksheet:
+  With ThisWorkbook.Sheets("Project_values")
+    lngRowMax = .UsedRange.Rows.Count
+    For i = 1 To intAmountofPeriods + 1
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).Value = i - 1
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).Font.Bold = True
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).Interior.Color = 65535
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).HorizontalAlignment = xlCenter
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).NumberFormat = "0"
+    Next i
+  End With ' ThisWorkbook.Sheets("Project_values")
+  
+  ' Return the matrix of the possible states of the project values to dlgDataInput:
+  TreeCalculation = sngTree
+  
+End Function ' TreeCalculation
+
+Function OptionValues(sngPeriods As Integer, sngTree() As Single, sngStrike() As Single, _
+                      sngUp As Single, sngDown As Single, sngInterestRate As Single)
+'****************************************************************************************
+' As a second step in the Real Option Model, this function calculates the option values
+' from the binomial tree of possible project values for the underlying investment
+' opportunity, based on a rollback calculation.
+'****************************************************************************************
+  Dim i As Integer, j As Integer, k As Integer
+  ' Matrix containing the option values, calculated in a roll-back analysis of the
+  ' project values residing in the matrix sngTree(), passed over from TreeCalculation:
+  Dim sOptionValues() As Single
+  ' Redimensionalize matrix for the option values based on amount of periods (years):
+  ReDim sOptionValues(2 * sngPeriods, sngPeriods)
+  ' Probability of the Up movement:
+  Dim sngProbUp As Single
+  Dim wksName As Worksheet
+  Dim strMessageText As String
+  ' Keep track of the last row number of the Used Range:
+  Dim lngRowMax As Integer
+  Dim strText As String
+  
+  On Error Resume Next
+  ' Calculate the probability for an Up movement:
+  sngProbUp = (1 + sngInterestRate - sngDown) / (sngUp - sngDown)
+  If Err.Number <> 0 Then
+    MsgBox ("An error occured (devision by zero), as Up and Down Values were identical:")
+    Exit Function
+  End If
+  ' Copy matrix elements from the option values to this matrix, as initialization:
+  For i = 0 To 2 * sngPeriods
+    For j = 0 To sngPeriods
+      If sngTree(i, j) = 0 Then
+        ' Workaround to omit redundant values, otherwise making the tree ugly to look at:
+        sOptionValues(i, j) = -999
+      Else
+        sOptionValues(i, j) = sngTree(i, j)
+      End If
+    Next j
+  Next i
+  
+  ' Create a worksheet for the Call values, if not existing. Otherwise delete old content:
+  If Not WorksheetExists("Option_values") Then
+    ' Create a worksheet with the name Best_Guess_DCF:
+    Set wksName = ThisWorkbook.Sheets.Add(After:= _
+                 ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    wksName.Name = "Option_values"
+  Else
+    strMessageText = "The data from the previous case will be erased."
+    strMessageText = MsgBox(strMessageText, vbOK + vbCancel, "Preparing the new input")
+    ' If the user pressed Cancel, abort:
+    If strMessageText = 2 Then
+      Exit Function
+    End If
+    ThisWorkbook.Sheets("Option_values").Rows("1:200").Delete
+  End If ' Not WorksheetExists("Option_values")
+  
+  ' Focus on worksheet:
+  ThisWorkbook.Sheets("Option_values").Activate
+  ThisWorkbook.Sheets("Option_values").Range("A1").Select
+  ' Initialize first value:
+  Cells(sngPeriods + 1, 1) = CLng(sOptionValues(sngPeriods, 0))
+  
+  ' Subtract the strike value from each project value, starting from the last column,
+  ' where j is the column number:
+  For j = sngPeriods To 1 Step -1
+  ' Run through all rows i, which belong to the column j, and which are not empty:
+    For i = sngPeriods - j To j + sngPeriods Step 2
+      ' Calculate Call value = max{S(i)-K(i);0}, where S is the value of the underlying
+      ' and K the strike value:
+      sOptionValues(i, j) = Application.WorksheetFunction.Max(sOptionValues(i, j) _
+      - sngStrike(j), 0)
+      Cells(i + 1, j + 1) = CLng(sOptionValues(i, j))
+    Next i
+
+  ' Calculate the Call value, using the input from the previous loop:
+  ' Note: 1-sngProbUp is the probability for a Downward movement:
+    For i = sngPeriods - j + 1 To j + sngPeriods - 1 Step 2
+      sOptionValues(i, j - 1) = (sOptionValues(i - 1, j) * sngProbUp + _
+      sOptionValues(i + 1, j) * (1 - sngProbUp)) / (1 + sngInterestRate)
+      Cells(i + 1, j) = CLng(sOptionValues(i, j - 1))
+    Next i
+  Next j
+  
+  ' Format numbers:
+  With ThisWorkbook.Sheets("Option_values").UsedRange.Select
+    Selection.NumberFormat = "#,##0"
+  End With
+  
+  With ThisWorkbook.Sheets("Option_values")
+    lngRowMax = .UsedRange.Rows.Count
+    For i = 1 To sngPeriods + 1
+      ' Write time axis:
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).Value = i - 1
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).Font.Bold = True
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).Interior.Color = 65535
+      .Range(Cells(lngRowMax + 2, i), Cells(lngRowMax + 2, i)).HorizontalAlignment = xlCenter
+    Next i
+  End With ' ThisWorkbook.Sheets("Option_values")
+  
+  OptionValues = sOptionValues
+  
+End Function ' OptionValues
+
+' Check if a worksheet with the name wksName already exists:
+Function WorksheetExists(wksName As String) As Boolean
+  Dim wksTemp As Worksheet
+  Dim boolTemp As Boolean
+  boolTemp = False
+  wksName = UCase(wksName)
+  For Each wksTemp In ThisWorkbook.Sheets
+    ' Compare names all in Upper Case:
+    If UCase(wksTemp.Name) = wksName Then
+      boolTemp = True
+      Exit For
+    End If
+  Next
+  WorksheetExists = boolTemp
+End Function ' WorksheetExists
